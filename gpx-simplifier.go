@@ -11,7 +11,9 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"os/exec"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/golangplus/fmt"
@@ -35,6 +37,13 @@ type GpxFile struct {
 	Contents []byte
 }
 
+type Result struct {
+	Success      bool
+	ErrorMessage string
+	URL          template.URL
+	FileName     string
+}
+
 func handleGpxUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method == "GET" {
 		crutime := time.Now().Unix()
@@ -53,25 +62,70 @@ func handleGpxUpload(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		numFiles, _ := strconv.Atoi(r.FormValue("num_files"))
-		//num_points, _ := strconv.Atoi(r.FormValue("points_per_file"))
+		numPoints, _ := strconv.Atoi(r.FormValue("points_per_file"))
 		contents := new(bytes.Buffer)
 
 		//First split files
 		io.Copy(contents, file)
 		gpxFileBytes := contents.Bytes()
-		saveFile(gpxFileBytes, "/tmp/test.txt")
-		files, _ := splitGpxFile(gpxFileBytes, numFiles)
-		//TODO: Then use gpsbabel to limit the points in each file
+		files, err := splitGpxFile(gpxFileBytes, numFiles)
+		if err != nil {
+			fmt.Println(err)
+			message := fmt.Sprintf("Error reading GPX file, are you sure it's in the correct format?")
+			result := &Result{Success: false, ErrorMessage: message}
+			t, _ := template.ParseFiles("result.gtpl")
+			t.Execute(w, result)
+			return
+		}
 
-		//Now zip
-		zipFileBytes, _ := createZipFile(files)
+		files, err = simplifyGpx(files, numPoints)
+		if err != nil {
+			fmt.Println(err)
+			message := fmt.Sprintf("Error simplifying GPX file")
+			result := &Result{Success: false, ErrorMessage: message}
+			t, _ := template.ParseFiles("result.gtpl")
+			t.Execute(w, result)
+			return
+		}
+
+		zipFileBytes, err := createZipFile(files)
+		saveFile(zipFileBytes, "/tmp/output.zip")
+		if err != nil {
+			fmt.Println(err)
+			message := fmt.Sprintf("Internal error packaging results: %s", err)
+			result := &Result{Success: false, ErrorMessage: message}
+			t, _ := template.ParseFiles("result.gtpl")
+			t.Execute(w, result)
+			return
+		}
 		dataEncodedUrl := dataurl.EncodeBytes(zipFileBytes)
 
 		//Then present back to the user
 		targetFileName, _ := uuid.NewV4()
-		fmt.Fprintf(w, "<a download=\"%s\" href=\"%s\">Click me</a>", targetFileName.String(), dataEncodedUrl)
+		result := &Result{Success: true, URL: template.URL(dataEncodedUrl), FileName: targetFileName.String()}
+		t, _ := template.ParseFiles("result.gtpl")
+		t.Execute(w, result)
 
 	}
+}
+
+func simplifyGpx(files []GpxFile, numPoints int) ([]GpxFile, error) {
+	for x, _ := range files {
+		//Note: need to use pointer here as otherwise doesn't change the value in the slice
+		file := &files[x]
+		cmd := exec.Command("gpsbabel", "-i", "gpx", "-f", "-", "-x", "simplify,count="+strconv.Itoa(numPoints), "-o", "gpx", "-F", "-")
+		cmd.Stdin = strings.NewReader(string(file.Contents))
+		var outBuff bytes.Buffer
+		var errBuff bytes.Buffer
+		cmd.Stdout = &outBuff
+		cmd.Stderr = &errBuff
+		err := cmd.Run()
+		if err != nil {
+			return nil, err
+		}
+		file.Contents = outBuff.Bytes()
+	}
+	return files, nil
 }
 
 func saveFile(contents []byte, fileName string) {
@@ -98,7 +152,12 @@ func splitGpxFile(contents []byte, numFiles int) ([]GpxFile, error) {
 	for i := 0; i < numFiles; i++ {
 		//Create a new GPX for each
 		buffer := new(bytes.Buffer)
-		fileName := fmt.Sprintf("%s_%d", g.Title, (i + 1))
+		var fileName string
+		if g.Title == "" {
+			fileName = fmt.Sprintf("filepart_%d", (i + 1))
+		} else {
+			fileName = fmt.Sprintf("%s_%d", g.Title, (i + 1))
+		}
 		gpx := &gpx{Creator: "gpx-simplifier", Title: fileName}
 		start := i * trackpointsPerFile
 		end := start + trackpointsPerFile
