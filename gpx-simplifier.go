@@ -24,20 +24,20 @@ import (
 type gpx struct {
 	Creator     string       `xml:"creator,attr"`
 	Title       string       `xml:"trk>name"`
-	TrackPoints []TrackPoint `xml:"trk>trkseg>trkpt"`
+	TrackPoints []trackPoint `xml:"trk>trkseg>trkpt"`
 }
 
-type TrackPoint struct {
+type trackPoint struct {
 	Lat float64 `xml:"lat,attr"`
 	Lon float64 `xml:"lon,attr"`
 }
 
-type GpxFile struct {
+type gpxFile struct {
 	FileName string
 	Contents []byte
 }
 
-type Result struct {
+type resultModel struct {
 	Success      bool
 	ErrorMessage string
 	URL          template.URL
@@ -72,7 +72,7 @@ func handleGpxUpload(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			fmt.Println(err)
 			message := fmt.Sprintf("Error reading GPX file, are you sure it's in the correct format?")
-			result := &Result{Success: false, ErrorMessage: message}
+			result := &resultModel{Success: false, ErrorMessage: message}
 			t, _ := template.ParseFiles("result.gtpl")
 			t.Execute(w, result)
 			return
@@ -82,7 +82,7 @@ func handleGpxUpload(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			fmt.Println(err)
 			message := fmt.Sprintf("Error simplifying GPX file")
-			result := &Result{Success: false, ErrorMessage: message}
+			result := &resultModel{Success: false, ErrorMessage: message}
 			t, _ := template.ParseFiles("result.gtpl")
 			t.Execute(w, result)
 			return
@@ -93,24 +93,24 @@ func handleGpxUpload(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			fmt.Println(err)
 			message := fmt.Sprintf("Internal error packaging results: %s", err)
-			result := &Result{Success: false, ErrorMessage: message}
+			result := &resultModel{Success: false, ErrorMessage: message}
 			t, _ := template.ParseFiles("result.gtpl")
 			t.Execute(w, result)
 			return
 		}
-		dataEncodedUrl := dataurl.EncodeBytes(zipFileBytes)
+		dataEncodedURL := dataurl.EncodeBytes(zipFileBytes)
 
 		//Then present back to the user
 		targetFileName, _ := uuid.NewV4()
-		result := &Result{Success: true, URL: template.URL(dataEncodedUrl), FileName: targetFileName.String()}
+		result := &resultModel{Success: true, URL: template.URL(dataEncodedURL), FileName: targetFileName.String()}
 		t, _ := template.ParseFiles("result.gtpl")
 		t.Execute(w, result)
 
 	}
 }
 
-func simplifyGpx(files []GpxFile, numPoints int) ([]GpxFile, error) {
-	for x, _ := range files {
+func simplifyGpx(files []gpxFile, numPoints int) ([]gpxFile, error) {
+	for x := range files {
 		//Note: need to use pointer here as otherwise doesn't change the value in the slice
 		file := &files[x]
 		cmd := exec.Command("gpsbabel", "-i", "gpx", "-f", "-", "-x", "simplify,count="+strconv.Itoa(numPoints), "-o", "gpx", "-F", "-")
@@ -132,7 +132,7 @@ func saveFile(contents []byte, fileName string) {
 	ioutil.WriteFile(fileName, contents, 0666)
 }
 
-func splitGpxFile(contents []byte, numFiles int) ([]GpxFile, error) {
+func splitGpxFile(contents []byte, numFiles int) ([]gpxFile, error) {
 	buf := bytes.NewBuffer(contents)
 	dec := xml.NewDecoder(buf)
 
@@ -148,7 +148,7 @@ func splitGpxFile(contents []byte, numFiles int) ([]GpxFile, error) {
 	//Due to rounding this may drop couple of points but shouldn't be a big problem on my tracks
 	fmtp.Printfln("Num Trackpoints: %d, per file %d", numTrackpoints, trackpointsPerFile)
 
-	var gpxFiles = []GpxFile{}
+	var gpxFiles = []gpxFile{}
 	for i := 0; i < numFiles; i++ {
 		//Create a new GPX for each
 		buffer := new(bytes.Buffer)
@@ -165,21 +165,21 @@ func splitGpxFile(contents []byte, numFiles int) ([]GpxFile, error) {
 		gpx.TrackPoints = g.TrackPoints[start:end]
 		encoder := xml.NewEncoder(buffer)
 		encoder.Encode(gpx)
-		gpxFiles = append(gpxFiles, GpxFile{FileName: fileName, Contents: buffer.Bytes()})
+		gpxFiles = append(gpxFiles, gpxFile{FileName: fileName, Contents: buffer.Bytes()})
 	}
 
 	return gpxFiles, nil
 
 }
 
-func createZipFile(files []GpxFile) ([]byte, error) {
+func createZipFile(files []gpxFile) ([]byte, error) {
 	zipfile := new(bytes.Buffer)
 	writer := zip.NewWriter(zipfile)
 
 	for _, file := range files {
-		file_name := fmt.Sprintf("%s.gpx", file.FileName)
-		fmtp.Printfln("File: %s", file_name)
-		zipFile, err := writer.Create(file_name)
+		fileName := fmt.Sprintf("%s.gpx", file.FileName)
+		fmtp.Printfln("File: %s", fileName)
+		zipFile, err := writer.Create(fileName)
 		if err != nil {
 			fmtp.Printfln("Error adding file %s to zip: %s", file.FileName, err)
 			return nil, err
